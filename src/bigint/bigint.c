@@ -338,6 +338,18 @@ void bigint_div_uint64_inplace(bigint_t *a,  const uint64_t b){
 
 #endif
 
+int word_shift_right_inplace(bigint_t *a, size_t word_shift){
+    if(word_shift==0) return 1;
+    if(word_shift>=a->size){
+        a->size = 0;
+        return 1;
+    }
+    size_t new_size = a->size - word_shift;
+    memmove(a->limbs, a->limbs + word_shift, new_size * sizeof(uint32_t));
+    a->size = new_size;
+    return 1;
+}
+
 void bigint_shift_right_inplace(bigint_t *a, size_t shift){
     if(a==NULL || shift == 0) return;
 
@@ -350,12 +362,7 @@ void bigint_shift_right_inplace(bigint_t *a, size_t shift){
         return;
     }
 
-    if(word_shift > 0){
-        for(size_t i = 0; i<a->size - word_shift; i++){
-            a->limbs[i] = a->limbs[i+word_shift];
-        }
-        a->size -= word_shift;
-    }
+    if(!word_shift_right_inplace(a,word_shift)) return;
 
     if(bit_shift>0){
         uint32_t carry = 0;
@@ -366,6 +373,18 @@ void bigint_shift_right_inplace(bigint_t *a, size_t shift){
         }
     }
     trim_size(a);
+}
+
+int word_shift_left_inplace(bigint_t *a, size_t word_shift){
+    if(word_shift==0) return 1;
+    if(!ensure_capacity(a, a->size + word_shift)) return 0;
+    size_t old_size = a->size;
+    
+    memmove(a->limbs+word_shift, a->limbs, old_size * sizeof(uint32_t));
+
+    memset(a->limbs, 0, sizeof(uint32_t)*word_shift);
+    a->size += word_shift;
+    return 1;
 }
 
 int bigint_shift_left_inplace(bigint_t *a, size_t shift){
@@ -380,13 +399,7 @@ int bigint_shift_left_inplace(bigint_t *a, size_t shift){
         return 0;
     }
 
-    if(word_shift>0){
-        for(size_t i = a->size + word_shift; i-- > word_shift;){
-            a->limbs[i] = a->limbs[i - word_shift];
-        }
-        memset(a->limbs, 0, sizeof(uint32_t)*word_shift);
-        a->size += word_shift;
-    }
+    if(!word_shift_left_inplace(a, word_shift)) return;
 
     if(bit_shift>0){
         uint32_t carry = 0;
@@ -400,4 +413,66 @@ int bigint_shift_left_inplace(bigint_t *a, size_t shift){
     }
     trim_size(a);
     return 1;
+}
+
+bigint_t *bigint_div_inplace(bigint_t *a, bigint_t *b) {
+    if(b->size==0) return NULL;
+    size_t shifted_limbs = 0;
+    if(a->size < b->size){
+        shifted_limbs = b->size - a->size;
+    }
+    if(shifted_limbs>0 && !ensure_capacity(a, a->size+shifted_limbs+1)){
+        return NULL;
+    }
+    if(!word_shift_left_inplace(a, shifted_limbs)){
+        return NULL;
+    }
+    uint32_t top = b->limbs[b->size-1];
+    if(top==0){
+        // Division by zero
+        return NULL;
+    }
+    unsigned f_shift = (unsigned)__builtin_clz(top);
+    if(!bigint_shift_left_inplace(a, f_shift)) return NULL;
+    if(!bigint_shift_left_inplace(b, f_shift)) return NULL;
+
+    // Ensure the first n limbs of a is less than from n limbs of v
+    // Append 0 at a
+    a->limbs[a->size++] = 0;
+
+    bigint_t *q = bigint_create(a->size - b->size + 1);
+
+    size_t n = b->size;
+
+    for(size_t i = a->size; i-- >= b->size;){
+        const uint64_t base = UINT64_C(1)<<32;
+        uint64_t unn = (UINT64_C(1)<<32) * a->limbs[i] + a->limbs[i-1];
+        uint32_t vnn = b->limbs[n-1];
+        uint64_t qhat = unn/vnn;
+        uint32_t rhat = unn % vnn;
+        if (qhat >= base || qhat*b->limbs[n-2] > base*rhat + a->limbs[i-2]){
+            qhat -= 1;
+            rhat += vnn;
+        }
+        if (rhat < base && (qhat >= base || qhat*b->limbs[n-2] > base * rhat + a->limbs[i-2]))
+        {
+            qhat -= 1; rhat += vnn;
+        }
+        bigint_t *qv = bigint_mul_uint32(b, qhat);
+        bool borrow = sub_by_limbs_inplace(a->limbs+i+1-n, n+1, qv->limbs, qv->size);
+        bigint_free(qv);
+        if(borrow){
+            qhat--;
+            bool carry = add_by_limbs_inplace(a->limbs+i+1-n, n+1, b->limbs, n);
+        }
+        q->limbs[q->size + 1 - (a->size - i - 1)] = (uint32_t)qhat;
+    }
+    bigint_shift_right_inplace(a, f_shift);
+    bigint_shift_right_inplace(b, f_shift);
+    word_shift_right_inplace(a, shifted_limbs);
+    word_shift_right_inplace(b, shifted_limbs);
+    trim_size(a);
+    trim_size(b);
+    trim_size(q);
+    return q;
 }
