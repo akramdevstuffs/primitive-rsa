@@ -47,6 +47,7 @@ void bigint_shift_right_inplace(bigint_t *a, size_t shift);
 
 int bigint_shift_left_inplace(bigint_t *a, size_t shift);
 
+bigint_t *bigint_div_inplace(bigint_t *a, bigint_t *b);
 
 bigint_t *bigint_div(const bigint_t *a, const bigint_t *b);
 

@@ -284,6 +284,25 @@ bigint_t *bigint_mul_fft(const bigint_t *a, const bigint_t *b){
     ntt(v, N, p, g, false);
 }
 
+bigint_t *bigint_mul_uint32(const bigint_t *a, const uint32_t b){
+    if(a==NULL) return NULL;
+    size_t result_size = a->size + 1;
+    bigint_t *result = bigint_create(result_size);
+    if(result==NULL) return NULL;
+    memset(result->limbs, 0, result_size*sizeof(*result->limbs));
+    uint32_t carry = 0;
+    for(size_t i = 0; i<a->size;i++){
+        uint64_t curr = (uint64_t)a->limbs[i] * b + result->limbs[i] + carry;
+        result->limbs[i] = (uint32_t)curr;
+        carry = (curr>>32);
+    }
+    result->size = a->size;
+    if(carry)
+    result->limbs[result->size++] = (uint32_t)carry;
+    trim_size(result);
+    return result;
+}
+
 bigint_t *bigint_mul(const bigint_t *a, const bigint_t *b){
     if(a==NULL || b==NULL) return NULL;
     if(a->size==0 || b->size==0){
@@ -386,16 +405,16 @@ void bigint_div_uint64_inplace(bigint_t *a,  const uint64_t b){
 
 #endif
 
-int word_shift_right_inplace(bigint_t *a, size_t word_shift){
-    if(word_shift==0) return 1;
+void word_shift_right_inplace(bigint_t *a, size_t word_shift){
+    if(word_shift==0) return;
     if(word_shift>=a->size){
         a->size = 0;
-        return 1;
+        return;
     }
     size_t new_size = a->size - word_shift;
     memmove(a->limbs, a->limbs + word_shift, new_size * sizeof(uint32_t));
     a->size = new_size;
-    return 1;
+    return;
 }
 
 void bigint_shift_right_inplace(bigint_t *a, size_t shift){
@@ -410,7 +429,7 @@ void bigint_shift_right_inplace(bigint_t *a, size_t shift){
         return;
     }
 
-    if(!word_shift_right_inplace(a,word_shift)) return;
+    word_shift_right_inplace(a,word_shift);
 
     if(bit_shift>0){
         uint32_t carry = 0;
@@ -465,6 +484,7 @@ int bigint_shift_left_inplace(bigint_t *a, size_t shift){
 
 bigint_t *bigint_div_inplace(bigint_t *a, bigint_t *b) {
     if(b->size==0) return NULL;
+
     size_t shifted_limbs = 0;
     if(a->size < b->size){
         shifted_limbs = b->size - a->size;
@@ -488,32 +508,50 @@ bigint_t *bigint_div_inplace(bigint_t *a, bigint_t *b) {
     // Append 0 at a
     a->limbs[a->size++] = 0;
 
-    bigint_t *q = bigint_create(a->size - b->size + 1);
+    bigint_t *q = bigint_create(a->size - b->size);
+    q->size = a->size - b->size;
+    q->negative = (a->negative!=b->negative);
 
     size_t n = b->size;
 
-    for(size_t i = a->size; i-- >= b->size;){
+    for(size_t i = a->size; i-- > b->size;){
         const uint64_t base = UINT64_C(1)<<32;
         uint64_t unn = (UINT64_C(1)<<32) * a->limbs[i] + a->limbs[i-1];
         uint32_t vnn = b->limbs[n-1];
         uint64_t qhat = unn/vnn;
-        uint32_t rhat = unn % vnn;
-        if (qhat >= base || qhat*b->limbs[n-2] > base*rhat + a->limbs[i-2]){
-            qhat -= 1;
-            rhat += vnn;
+        if(n>1){
+            uint64_t rhat = unn % vnn;
+            if (qhat >= base || qhat*b->limbs[n-2] > base*rhat + a->limbs[i-2]){
+                qhat -= 1;
+                rhat += vnn;
+            }
+            if (rhat < base && (qhat >= base || qhat*b->limbs[n-2] > base * rhat + a->limbs[i-2]))
+            {
+                qhat -= 1; rhat += vnn;
+            }
         }
-        if (rhat < base && (qhat >= base || qhat*b->limbs[n-2] > base * rhat + a->limbs[i-2]))
-        {
-            qhat -= 1; rhat += vnn;
+        bigint_t *qv = bigint_mul_uint32(b, (uint32_t)qhat);
+        unsigned borrow = 0;
+        for(size_t j = 0, k=i-n; j<=n && k<=i; j++,k++){
+            uint32_t u = a->limbs[k];
+            uint32_t v = (j < qv->size) ? qv->limbs[j] : 0;
+            uint64_t subrehand = (uint64_t)v + borrow;
+            a->limbs[k] = (uint32_t)(u - subrehand);
+            borrow = (u<subrehand);
         }
-        bigint_t *qv = bigint_mul_uint32(b, qhat);
-        bool borrow = sub_by_limbs_inplace(a->limbs+i+1-n, n+1, qv->limbs, qv->size);
         bigint_free(qv);
         if(borrow){
             qhat--;
-            bool carry = add_by_limbs_inplace(a->limbs+i+1-n, n+1, b->limbs, n);
+            unsigned carry = 0;
+            for(size_t j = 0, k=i-n; j<=n && k<=i; j++,k++){
+                uint32_t u = a->limbs[k];
+                uint32_t v = (j<n)?b->limbs[j]:0;
+                uint64_t s = (uint64_t)u + v + carry;
+                a->limbs[k] = (uint32_t)s;
+                carry = (s>>32);
+            }
         }
-        q->limbs[q->size + 1 - (a->size - i - 1)] = (uint32_t)qhat;
+        q->limbs[i - n] = (uint32_t)qhat;
     }
     bigint_shift_right_inplace(a, f_shift);
     bigint_shift_right_inplace(b, f_shift);
