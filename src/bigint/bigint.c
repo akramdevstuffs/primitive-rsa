@@ -236,6 +236,54 @@ int bigint_assign(bigint_t *a, const bigint_t *b){
     return 1;
 }
 
+void ntt(uint32_t *a, size_t N, uint32_t p, uint32_t g, bool inverse){
+    for (size_t i = 1, j = 0; i < N; i++) {
+        size_t bit = N >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+
+        if (i < j){
+            uint32_t temp = a[i];
+            a[i] = a[j];
+            a[j] = temp;
+        }
+    }
+    
+}
+
+bigint_t *bigint_mul_fft(const bigint_t *a, const bigint_t *b){
+    if(a==NULL || b==NULL) return NULL;
+    if(a->size == 0 || b->size == 0){
+        return bigint_create(0);
+    }
+    size_t N = 1;
+    while(N < 2*(a->size + b->size)) N <<= 1;
+    uint32_t *u = (uint32_t*)malloc(sizeof(uint32_t)*N);
+    if(u==NULL) return NULL;
+    uint32_t *v = (uint32_t*)malloc(sizeof(uint32_t)*N);
+    if(v==NULL) {
+        free(u);
+        return NULL;
+    }
+    // Split the 32 bit limbs in 16 bit limbs to prevent overflow
+    // the result from fft will fit in 64 bits considering 32 bit size of N
+    // for 64 bit size of N use 128 bit to fit result fft
+    for(size_t i = 0; i<a->size;i++) {
+        u[2*i] = (a->limbs[i]<<16)>>16;
+        u[2*i | 1] = (a->limbs[i]>>16);
+    }
+    for(size_t i = 0; i<b->size;i++) {
+        v[2*i] = (b->limbs[i]<<16)>>16;
+        v[2*i | 1] = (b->limbs[i]>>16);
+    }
+    memset(u + 2*a->size, 0, sizeof(uint32_t)*(N - 2*a->size));
+    memset(v + 2*b->size, 0, sizeof(uint32_t)*(N - 2*b->size));
+    
+    ntt(u, N, p, g, false);
+    ntt(v, N, p, g, false);
+}
+
 bigint_t *bigint_mul(const bigint_t *a, const bigint_t *b){
     if(a==NULL || b==NULL) return NULL;
     if(a->size==0 || b->size==0){
