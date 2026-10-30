@@ -1,6 +1,7 @@
 #include "rsa/bigint.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 
 bigint_t *bigint_create(size_t capacity) {
@@ -42,7 +43,7 @@ void trim_size(bigint_t* a){
     }
 }
 
-bool ensure_capacity(bigint_t* bigint, int capacity){
+bool ensure_capacity(bigint_t* bigint, size_t capacity){
     if(bigint->capacity >= capacity) return true;
 
     // increment the size by doubling the current
@@ -88,7 +89,7 @@ bigint_t *bigint_from_string(const char *s){
         }
         uint32_t digit = (*p - '0');
         uint64_t carry = digit;
-        for(int i = 0;i<bigint->size;i++){
+        for(size_t i = 0;i<bigint->size;i++){
             carry = (uint64_t)bigint->limbs[i] * 10 + carry;
 
             bigint->limbs[i] = (uint32_t)carry;
@@ -135,7 +136,7 @@ int bigint_compare(const bigint_t* a, const bigint_t* b){
     return a->negative ? -cmp : cmp;
 }
 
-bool *bigint_add_abs(const bigint_t *a, const bigint_t *b, bigint_t *target){
+bool bigint_add_abs(const bigint_t *a, const bigint_t *b, bigint_t *target){
 
     if(a->size < b->size){
         const bigint_t *temp = a;
@@ -149,7 +150,7 @@ bool *bigint_add_abs(const bigint_t *a, const bigint_t *b, bigint_t *target){
 
     uint64_t carry = 0;
 
-    for(int i = 0;i<a->size;i++){
+    for(size_t i = 0;i<a->size;i++){
         uint32_t u = a->limbs[i];
         uint32_t v = i<b->size? b->limbs[i]: 0;
         target->limbs[i] = carry+u+v;
@@ -172,7 +173,7 @@ bool bigint_sub_abs(const bigint_t* a, const bigint_t* b, bigint_t* target){
 
     uint64_t borrow = 0;
 
-    for(int i = 0;i<a->size; i++){
+    for(size_t i = 0;i<a->size; i++){
         uint32_t u = a->limbs[i];
         uint32_t v = i<b->size ? b->limbs[i] : 0;
 
@@ -225,15 +226,84 @@ int bigint_assign(bigint_t *a, const bigint_t *b){
         return -1;
     }
 
-    if(!ensure_capacity(a, b->capacity)){
+    if(!ensure_capacity(a, b->size)){
         return -1;
     }
 
     memcpy(a->limbs, b->limbs, sizeof(uint32_t)*b->size);
 
+    a->size = b->size;
+
     trim_size(a);
 
     return 1;
+}
+
+bigint_t *bigint_copy(const bigint_t *a){
+    if(a==NULL) return NULL;
+    bigint_t *b = bigint_create(a->size);
+    if(b==NULL){
+        return NULL;
+    }
+    if(bigint_assign(b, a)!=1){
+        bigint_free(b);
+        return NULL;
+    }
+    return b;
+}
+
+/*
+* Helper function for modulo of to wo 64 bit multiplication
+* Provides a compiler safe function to multiply two 64 bit uint
+*/
+uint64_t modmul_uint64(uint64_t a, uint64_t b, uint64_t mod){
+    #ifdef __SIZEOF_INT128__
+
+    // If compliler supports 128 bit
+
+    return ((__uint128_t)a*b)%mod;
+
+    #else
+
+    // Use binary multiplication to prevent overflow
+    uint64_t result = 0;
+    a %= mod;
+    while(b){
+        if(b&1){
+            result = (result >= mod - a)
+                    ? result - (mod - a)
+                    : result + a;
+        }
+
+        b >>= 1;
+
+        if(b){
+            a = (a >= mod -a)
+                ? a - (mod - a)
+                : a + a;
+        }
+    }
+
+    return result;
+
+    #endif
+
+}
+
+/*
+* Helper function to calcualte modulo exponent using binary exponentiation
+*/
+uint32_t modpow(uint32_t a, uint32_t b, uint32_t mod){
+
+    uint32_t res = 1;
+    a%=mod;
+
+    while(b>0){
+        if(b&1) res = (uint32_t)(((uint64_t)res*a)%mod);
+        a = (uint32_t)(((uint64_t)a * a) % mod);
+        b >>= 1;
+    }
+    return res;
 }
 
 void ntt(uint32_t *a, size_t N, uint32_t p, uint32_t g, bool inverse){
@@ -249,7 +319,33 @@ void ntt(uint32_t *a, size_t N, uint32_t p, uint32_t g, bool inverse){
             a[j] = temp;
         }
     }
-    
+    uint32_t root = modpow(g, (p-1)/N, p);
+    uint32_t root_inv = modpow(root, N-1, p);
+
+    for(size_t len = 2; len<=N; len<<=1){
+
+        uint32_t wlen = inverse?root_inv:root;
+
+        for(size_t i = len; i<N; i<<=1)
+            wlen = (uint32_t)(((uint64_t)wlen*wlen)%p);
+        
+        for(size_t i = 0; i<N; i+=len){
+            uint32_t w = 1;
+            
+            for(size_t j = 0; j<len/2; j++){
+                uint32_t u = a[i+j], v = (uint32_t)(((uint64_t)a[i+j+len/2]*w)%p);
+                a[i+j] = u + v < p ? u + v : u+v-p;
+                a[i+j+len/2] = u>=v ? u-v : p+u-v;
+                w = (uint32_t)((uint64_t)w*wlen % p);
+            }
+        }
+    }
+
+    if(inverse){
+        uint32_t N_inv = modpow(N, p-2, p);
+        for(size_t i = 0; i<N;i++)
+            a[i] = (uint32_t)(((uint64_t)a[i]*N_inv) % p);
+    }
 }
 
 bigint_t *bigint_mul_fft(const bigint_t *a, const bigint_t *b){
@@ -259,6 +355,12 @@ bigint_t *bigint_mul_fft(const bigint_t *a, const bigint_t *b){
     }
     size_t N = 1;
     while(N < 2*(a->size + b->size)) N <<= 1;
+
+    // Check if required N is supported by the ntt roots
+    if(N > (1<<21)){
+        return NULL;
+    }
+
     uint32_t *u = (uint32_t*)malloc(sizeof(uint32_t)*N);
     if(u==NULL) return NULL;
     uint32_t *v = (uint32_t*)malloc(sizeof(uint32_t)*N);
@@ -270,18 +372,107 @@ bigint_t *bigint_mul_fft(const bigint_t *a, const bigint_t *b){
     // the result from fft will fit in 64 bits considering 32 bit size of N
     // for 64 bit size of N use 128 bit to fit result fft
     for(size_t i = 0; i<a->size;i++) {
-        u[2*i] = (a->limbs[i]<<16)>>16;
+        u[2*i] = (uint16_t)a->limbs[i];
         u[2*i | 1] = (a->limbs[i]>>16);
     }
     for(size_t i = 0; i<b->size;i++) {
-        v[2*i] = (b->limbs[i]<<16)>>16;
+        v[2*i] = (uint16_t)b->limbs[i];
         v[2*i | 1] = (b->limbs[i]>>16);
     }
     memset(u + 2*a->size, 0, sizeof(uint32_t)*(N - 2*a->size));
     memset(v + 2*b->size, 0, sizeof(uint32_t)*(N - 2*b->size));
-    
-    ntt(u, N, p, g, false);
-    ntt(v, N, p, g, false);
+
+    struct primitive_root {
+        uint32_t p,g,pw;
+    };
+
+    static const struct primitive_root roots[2] = {
+        {998244353, 3, (1<<23)},
+        {1004535809, 3, (1<<21)},
+        // {469762049, 3, (1<<26)}
+    };
+
+    static const unsigned no_of_roots = (sizeof(roots)/sizeof(*roots));
+
+    uint32_t* results[no_of_roots];
+
+    for(unsigned i = 0; i<no_of_roots; i++){
+        uint32_t *u1 = u;
+        uint32_t *v1 = v;
+        if(i!=no_of_roots-1){
+            u1 = (uint32_t*)malloc(sizeof(uint32_t)*N);
+            v1 = (uint32_t*)malloc(sizeof(uint32_t)*N);
+            if(u1==NULL || v1 == NULL){
+                if(u1!=NULL) free(u1);
+                if(v1!=NULL) free(v1);
+                free(u);
+                free(v);
+                for(unsigned j=0; j<i;j++) free(results[j]);
+                return NULL;
+            }
+            memcpy(u1, u, sizeof(*u)*N);
+            memcpy(v1, v, sizeof(*v)*N);
+        }
+        ntt(u1, N, roots[i].p, roots[i].g, false);
+        ntt(v1, N, roots[i].p, roots[i].g, false);
+
+        // Multiply to compute convolution
+        for(size_t j = 0; j<N;j++) u1[j] = (uint32_t)((UINT64_C(1)*u1[j]*v1[j]) % roots[i].p);
+        ntt(u1, N, roots[i].p, roots[i].g, true);
+        results[i] = u1;
+        free(v1);
+    }
+
+
+    // Reconstruct the actual value of convolution using CRT
+    uint64_t *res = (uint64_t*)malloc(sizeof(*res)*N);
+    if(res==NULL) {
+        for(unsigned i = 0;i<no_of_roots;i++) free(results[i]);
+        return NULL;
+    }
+    memset(res, 0, sizeof(*res)*N);
+    uint64_t M = 1;
+    for(unsigned i = 0;i<no_of_roots;i++) M *= roots[i].p;
+
+    // Calculate N_i to avoid recomputations
+    uint32_t N_s[no_of_roots];
+
+    for(unsigned i = 0; i<no_of_roots;i++)
+        N_s[i] = modpow(M/roots[i].p, roots[i].p-2, roots[i].p);
+
+    for(unsigned i = 0;i<N;i++){
+        for(size_t j=0; j<no_of_roots;j++){
+            uint32_t a_i = results[j][i];
+            uint32_t M_i = M / roots[j].p;
+            // Mod inverse of M_i using p
+            uint32_t N_i = N_s[j];
+            res[i] = (res[i] + modmul_uint64((uint64_t)a_i*M_i, N_i, M)) % M;
+        }
+    }
+
+    for(unsigned i = 0; i<no_of_roots;i++) free(results[i]);
+
+    // Normalise the res each limb should have 2^16 in range value
+    uint64_t carry = 0;
+    for(size_t i = 0; i<N;i++){
+        uint64_t curr = res[i] + carry;
+        res[i] = (uint16_t)curr;
+        carry = curr>>16;
+    }
+
+    // combine the 2^16 words to 2^32 words
+    bigint_t *result = bigint_create(N/2);
+    for(size_t i = 0; i<N/2;i++){
+        result->limbs[i] = (uint32_t)((res[2*i|1]<<16) | res[2*i]);
+    }
+
+    result->size = N>>1;
+    result->negative = a->negative!=b->negative;
+    trim_size(result);
+
+    free(res);
+
+    return result;
 }
 
 bigint_t *bigint_mul_uint32(const bigint_t *a, const uint32_t b){
@@ -327,15 +518,16 @@ bigint_t *bigint_mul(const bigint_t *a, const bigint_t *b){
     }
     memset(result->limbs, 0,sizeof(*result->limbs)*capacity);
     result->negative = (a->negative!=b->negative);
+    result->size = capacity;
 
     for(size_t i = 0; i<a->size;i++){
         uint64_t carry = 0;
         for(size_t j = 0; j<b->size; j++){
             uint64_t curr = 
-                (uint64_t)a->limbs[i] * b->limbs[i]
+                (uint64_t)a->limbs[i] * b->limbs[j]
                 + result->limbs[i+j]
                 + carry;
-            result->limbs[i] = (uint32_t)curr;
+            result->limbs[i+j] = (uint32_t)curr;
             carry = curr>>32;
         }
 
@@ -353,7 +545,7 @@ bigint_t *bigint_div_uint(const bigint_t *a, const uint32_t b){
         return bigint_create(0);
     bigint_t *result = bigint_create(a->size);
     uint64_t carry = 0;
-    for(size_t i = a->size - 1; i>=0;i--){
+    for(size_t i = a->size - 1; i-- >0;){
         uint64_t curr = a->limbs[i] + (carry << 32);
         result->limbs[i] = (uint32_t)(curr/b);
         carry = (uint32_t)(curr%b);
@@ -365,7 +557,7 @@ bigint_t *bigint_div_uint(const bigint_t *a, const uint32_t b){
 void bigint_div_uint_inplace(bigint_t *a,  const uint32_t b){
     if(a==NULL || b==0 || a->size == 0) return;
     uint64_t carry = 0;
-    for(size_t i = a->size - 1; i>=0;i--){
+    for(size_t i = a->size - 1; i-- >0;){
         uint64_t curr = a->limbs[i] + (carry << 32);
         a->limbs[i] = curr/b;
         carry = (uint32_t)(curr%b);
@@ -381,7 +573,7 @@ bigint_t *bigint_div_uint64(const bigint_t *a, const uint64_t b){
         return bigint_create(0);
     bigint_t *result = bigint_create(a->size);
     __uint128_t carry = 0;
-    for(size_t i = a->size - 1; i>=0;i--){
+    for(size_t i = a->size - 1; i-- >0;){
         __uint128_t curr = (carry << 32) + a->limbs[i];
         result->limbs[i] = curr/b;
         carry = (uint64_t)(curr%b);
@@ -393,7 +585,7 @@ bigint_t *bigint_div_uint64(const bigint_t *a, const uint64_t b){
 void bigint_div_uint64_inplace(bigint_t *a,  const uint64_t b){
     if(a==NULL || b==0 || a->size == 0) return;
     __uint128_t carry = 0;
-    for(size_t i = a->size - 1; i>=0;i--){
+    for(size_t i = a->size - 1; i-- > 0;){
         __uint128_t curr = (carry << 32) + a->limbs[i];
         a->limbs[i] = curr/b;
         carry = (uint64_t)(curr%b);
@@ -425,7 +617,7 @@ void bigint_shift_right_inplace(bigint_t *a, size_t shift){
 
     if(word_shift >= a->size){
         a->size = 0;
-        // free the ram
+        trim_size(a);
         return;
     }
 
@@ -433,7 +625,7 @@ void bigint_shift_right_inplace(bigint_t *a, size_t shift){
 
     if(bit_shift>0){
         uint32_t carry = 0;
-        for(size_t i = a->size - 1; i>=0;i--){
+        for(size_t i = a->size; i-- > 0;){
             uint32_t curr = a->limbs[i];
             a->limbs[i] = (curr >> bit_shift) | carry;
             carry = curr << (32 - bit_shift);
@@ -466,7 +658,7 @@ int bigint_shift_left_inplace(bigint_t *a, size_t shift){
         return 0;
     }
 
-    if(!word_shift_left_inplace(a, word_shift)) return;
+    if(!word_shift_left_inplace(a, word_shift)) return 0;
 
     if(bit_shift>0){
         uint32_t carry = 0;
@@ -482,27 +674,38 @@ int bigint_shift_left_inplace(bigint_t *a, size_t shift){
     return 1;
 }
 
-bigint_t *bigint_div_inplace(bigint_t *a, bigint_t *b) {
-    if(b->size==0) return NULL;
+bigint_t *bigint_div_inplace(bigint_t *_a, const bigint_t *_b) {
+    if(_b->size==0) return NULL;
 
     size_t shifted_limbs = 0;
-    if(a->size < b->size){
-        shifted_limbs = b->size - a->size;
+    if(_a->size < _b->size){
+        shifted_limbs = _b->size - _a->size;
     }
-    if(shifted_limbs>0 && !ensure_capacity(a, a->size+shifted_limbs+1)){
+    if(shifted_limbs>0 && !ensure_capacity(_a, _a->size+shifted_limbs+1)){
         return NULL;
     }
-    if(!word_shift_left_inplace(a, shifted_limbs)){
+    if(!word_shift_left_inplace(_a, shifted_limbs)){
         return NULL;
     }
+
+    bigint_t *a = _a;
+
+    // Create a copy of b
+    bigint_t *b = bigint_copy(_b);
+    if(b==NULL){
+        return NULL;
+    }
+
     uint32_t top = b->limbs[b->size-1];
     if(top==0){
         // Division by zero
         return NULL;
     }
     unsigned f_shift = (unsigned)__builtin_clz(top);
-    if(!bigint_shift_left_inplace(a, f_shift)) return NULL;
-    if(!bigint_shift_left_inplace(b, f_shift)) return NULL;
+    if(!bigint_shift_left_inplace(a, f_shift) || !bigint_shift_left_inplace(b, f_shift)) {
+        bigint_free(b);
+        return NULL;
+    }
 
     // Ensure the first n limbs of a is less than from n limbs of v
     // Append 0 at a
@@ -553,12 +756,29 @@ bigint_t *bigint_div_inplace(bigint_t *a, bigint_t *b) {
         }
         q->limbs[i - n] = (uint32_t)qhat;
     }
+
+    // Free the copy of _b
+    bigint_free(b);
+
     bigint_shift_right_inplace(a, f_shift);
-    bigint_shift_right_inplace(b, f_shift);
     word_shift_right_inplace(a, shifted_limbs);
-    word_shift_right_inplace(b, shifted_limbs);
     trim_size(a);
-    trim_size(b);
     trim_size(q);
+    
+    /*
+    * Use this to restore b if operating on the given divisor to save space
+    // bigint_shift_right_inplace(b, f_shift);
+    // word_shift_right_inplace(b, shifted_limbs);
+    // trim_size(b);
+    */
+
     return q;
+}
+
+bigint_t *bigint_mod(const bigint_t *a, const bigint_t *b){
+    bigint_t *rem = bigint_copy(a);
+    if(rem==NULL) return NULL;
+    bigint_t *q = bigint_div_inplace(rem, b);
+    bigint_free(q);
+    return rem;
 }
