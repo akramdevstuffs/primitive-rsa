@@ -19,6 +19,22 @@ static int tests_failed = 0;
         }                                                      \
     } while (0)
 
+
+/*
+* Helper function to print bigint
+*/
+static void bigint_print(const bigint_t *a){
+    if(a->size==0){
+        printf("0\n");
+        return;
+    }
+    if(a->negative)
+        printf("-");
+    for(size_t i = 0; i<a->size;i++)
+        printf("%u ", a->limbs[i]);
+    printf("\n");
+}
+
 /*
  * Check that a bigint matches an expected representation.
  *
@@ -595,7 +611,7 @@ static void test_mul_case(size_t a_size,
 }
 
 
-void test_large_mul_fft(void)
+static void test_large_mul_fft(void)
 {
     printf("\n--- Large FFT vs Schoolbook multiplication ---\n");
 
@@ -634,7 +650,7 @@ void test_large_mul_fft(void)
     printf("--- Large multiplication tests completed ---\n");
 }
 
-void test_right_shift(void) {
+static void test_right_shift(void) {
 
     printf("\n --- test_right_shift --- \n");
 
@@ -737,7 +753,7 @@ void test_right_shift(void) {
     bigint_free(a);
 }
 
-void test_left_shift(void) {
+static void test_left_shift(void) {
 
     printf("\n --- test_left_shift --- \n");
 
@@ -799,7 +815,7 @@ void test_left_shift(void) {
     bigint_free(b);
 }
 
-void test_div_inplace(void) {
+static void test_div_inplace(void) {
 
     printf("\n --- test_div --- \n");
 
@@ -904,6 +920,244 @@ void test_div_inplace(void) {
     bigint_free(b);
 }
 
+static bigint_t *reference_modpow(
+    const bigint_t *a,
+    const bigint_t *b,
+    const bigint_t *mod
+) {
+    
+    bigint_t *base = bigint_copy(a);
+    bigint_t *exp = bigint_copy(b);
+    bigint_t *result = bigint_from_string("1");
+    bigint_t *temp = NULL;
+
+    if(!base || !exp || !result) goto cleanup;
+
+    if(bigint_mod_inplace(base, mod) != 1)
+        goto cleanup;
+
+    if(bigint_mod_inplace(result, mod) != 1)
+        goto cleanup;
+    
+    while (exp->size) {
+
+            if (exp->limbs[0] & 1) {
+                bigint_t *temp = bigint_mul(result, base);
+
+                if (!temp)
+                    goto cleanup;
+
+                if (bigint_mod_inplace(temp, mod) != 1) {
+                    bigint_free(temp);
+                    goto cleanup;
+                }
+
+                bigint_free(result);
+                result = temp;
+            }
+
+            bigint_shift_right_inplace(exp, 1);
+
+            if (exp->size) {
+                bigint_t *temp = bigint_mul(base, base);
+
+                if (!temp)
+                    goto cleanup;
+
+                if (bigint_mod_inplace(temp, mod) != 1) {
+                    bigint_free(temp);
+                    goto cleanup;
+                }
+
+                bigint_free(base);
+                base = temp;
+            }
+        }
+
+        bigint_free(base);
+        bigint_free(exp);
+
+        return result;
+
+    cleanup:
+        bigint_free(base);
+        bigint_free(exp);
+        bigint_free(result);
+
+        return NULL;
+}
+
+static void test_modpow_case(
+    const char *name,
+    const char *a_str,
+    const char *e_str,
+    const char *mod_str,
+    const char *expected_str
+) {
+    bigint_t *a = bigint_from_string(a_str);
+    bigint_t *e = bigint_from_string(e_str);
+    bigint_t *mod = bigint_from_string(mod_str);
+    bigint_t *expected = bigint_from_string(expected_str);
+
+    CHECK(a && e && mod && expected,
+          "Create modpow operands");
+
+    if (!a || !e || !mod || !expected)
+        goto cleanup;
+
+    bigint_t *actual = bigint_modpow(a, e, mod);
+    bigint_t *reference = reference_modpow(a, e, mod);
+
+    CHECK(actual != NULL, name);
+    CHECK(reference != NULL, "Reference modpow");
+
+    if (actual && reference) {
+        CHECK(
+            bigint_compare(actual, reference) == 0,
+            "Montgomery vs reference"
+        );
+
+        CHECK(
+            bigint_compare(actual, expected) == 0,
+            name
+      
+
+        );
+    }
+
+    bigint_free(actual);
+    bigint_free(reference);
+
+cleanup:
+    bigint_free(a);
+    bigint_free(e);
+    bigint_free(mod);
+    bigint_free(expected);
+}
+
+
+static void test_modpow(void) {
+    printf("\n========== MODPOW TESTS ==========\n");
+
+    test_modpow_case(
+        "Basic",
+        "4", "13", "497", "445"
+    );
+
+    test_modpow_case(
+        "Zero exponent",
+        "123", "0", "1000000007", "1"
+    );
+
+    test_modpow_case(
+        "Exponent one",
+        "987654321", "1", "4294967291", "987654321"
+    );
+
+    test_modpow_case(
+        "Medium exponent",
+        "123456789", "12345", "1000000007", "614455772"
+    );
+
+    test_modpow_case(
+        "Large exponent",
+        "2", "65537", "1000000007", "947173645"
+    );
+
+    test_modpow_case(
+        "Multi-limb modulus",
+        "987654321", "123456", "4294967291", "3452667444"
+    );
+
+    test_modpow_case(
+        "Multi-limb base and modulus",
+        "12345678901234567890",
+        "12345",
+        "18446744073709551557",
+        "9738673685246996908"
+    );
+
+
+    printf("========== MODPOW COMPLETE ==========\n");
+}
+
+static void test_modpow_random(void){
+    printf("\n ---- RANDOM MODPOW TEST (test_modpow_random) ---- \n");
+
+    const size_t NUM_TESTS = 32;
+
+    for(size_t i  = 0; i<NUM_TESTS;i++){
+
+        // Random operand sizes
+        size_t a_size = 1 + random_u32() % 6;
+        size_t e_size = 1 + random_u32() % 2;
+        size_t mod_size = 1 + random_u32() % 4;
+
+        bigint_t *a = generate_bigint(a_size, PATTERN_RANDOM, false);
+
+        bigint_t *e = generate_bigint(e_size, PATTERN_RANDOM, false);
+        
+        bigint_t *mod = generate_bigint(mod_size, PATTERN_RANDOM, false);
+
+        if(!a || !e || !mod){
+            CHECK(false, "Random modpow allocation");
+            if(a) bigint_free(a);
+            if(e) bigint_free(e);
+            if(mod) bigint_free(mod);
+            continue;
+        }
+
+        // Montgomery requires an odd modulus.
+        mod->limbs[0] |= 1;
+
+        // Ensure modulus > 1.
+        if (mod_size == 1)
+            mod->limbs[0] |= 2;
+
+        // Calculate using Montgomery implementation.
+        bigint_t *actual = bigint_modpow(a, e, mod);
+
+        // Calculate using schoolbook multiplication reference.
+        bigint_t *expected = reference_modpow(a, e, mod);
+
+        char message[128];
+
+        snprintf(
+            message,
+            sizeof(message),
+            "Random modpow #%zu (a:%zu limbs, e:%zu limbs, mod:%zu limbs)",
+            i + 1, a_size, e_size, mod_size
+        );
+
+        CHECK(actual != NULL, "Random modpow result");
+        CHECK(expected != NULL, "Random reference result");
+
+        if (actual && expected) {
+            if(bigint_compare(actual, expected)!=0){
+                bigint_print(a);
+                bigint_print(e);
+                bigint_print(mod);
+                printf("\n");
+
+                bigint_print(actual);
+                bigint_print(expected);
+                printf("\n\n");
+
+            }
+            CHECK(
+                bigint_compare(actual, expected) == 0,
+                message
+            );
+        }
+
+        bigint_free(a);
+        bigint_free(e);
+        bigint_free(mod);
+        bigint_free(actual);
+        bigint_free(expected);
+    }
+}
+
 /* ---------------------------------------------------------
  * 5. Main
  * --------------------------------------------------------- */
@@ -916,7 +1170,7 @@ int main(void) {
     test_assign();
     test_copy();
     test_mul_uint32();
-    // test_mul("bigint_mul", bigint_mul);
+    test_mul("bigint_mul", bigint_mul);
     test_mul("bigint_mul_fft", bigint_mul_fft);
 
     test_large_mul_fft();
@@ -926,6 +1180,11 @@ int main(void) {
     test_left_shift();
 
     test_div_inplace();
+
+    test_modpow();
+
+    test_modpow_random();
+
 
     printf("\n================================\n");
     printf("Tests run:    %d\n", tests_run);

@@ -57,7 +57,11 @@ bigint_t *bigint_div_inplace(bigint_t *a, const bigint_t *b);
 
 // bigint_t *bigint_div(const bigint_t *a, const bigint_t *b);
 
-bigint_t *bigint_mod(const bigint_t *a, const bigint_t *b);
+int bigint_mod_inplace(bigint_t *a, const bigint_t *mod);
+
+bigint_t *bigint_mod(const bigint_t *a, const bigint_t *mod);
+
+bigint_t *bigint_modpow(const bigint_t *a, const bigint_t *b, const bigint_t *mod);
 
 
 #endif // RSA_BIGINT_H

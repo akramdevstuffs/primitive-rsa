@@ -189,6 +189,21 @@ bool bigint_sub_abs(const bigint_t* a, const bigint_t* b, bigint_t* target){
     return true;
 }
 
+int bigint_add_uint32_inplace(bigint_t *a, uint32_t b){
+    uint32_t carry = b;
+    for(size_t i = 0; i<a->size;i++){
+        uint64_t curr = (uint64_t)a->limbs[i] + carry;
+        a->limbs[i] = (uint32_t)curr;
+        carry = curr>>32;
+    }
+    if(carry){
+        if(!ensure_capacity(a, a->size+1))
+            return -1;
+        a->limbs[a->size++] = carry;
+    }
+    return 1;
+}
+
 bigint_t *bigint_add(const bigint_t *a, const bigint_t *b){
     size_t max_size = a->size+1;
     if(max_size <= b->size){
@@ -233,6 +248,7 @@ int bigint_assign(bigint_t *a, const bigint_t *b){
     memcpy(a->limbs, b->limbs, sizeof(uint32_t)*b->size);
 
     a->size = b->size;
+    a->negative = b->negative;
 
     trim_size(a);
 
@@ -677,41 +693,40 @@ int bigint_shift_left_inplace(bigint_t *a, size_t shift){
 bigint_t *bigint_div_inplace(bigint_t *_a, const bigint_t *_b) {
     if(_b->size==0) return NULL;
 
-    size_t shifted_limbs = 0;
     if(_a->size < _b->size){
-        shifted_limbs = _b->size - _a->size;
+        return bigint_create(0);
     }
-    if(shifted_limbs>0 && !ensure_capacity(_a, _a->size+shifted_limbs+1)){
-        return NULL;
-    }
-    if(!word_shift_left_inplace(_a, shifted_limbs)){
-        return NULL;
-    }
+
+    bigint_t *b = NULL;
+    bigint_t *q = NULL;
+    bigint_t *qv = NULL;
+    bigint_t *result = NULL;
 
     bigint_t *a = _a;
 
     // Create a copy of b
-    bigint_t *b = bigint_copy(_b);
-    if(b==NULL){
-        return NULL;
-    }
+    b = bigint_copy(_b);
+    if(b==NULL) goto cleanup;
 
     uint32_t top = b->limbs[b->size-1];
-    if(top==0){
-        // Division by zero
-        return NULL;
-    }
+    if(top==0) goto cleanup;
+
     unsigned f_shift = (unsigned)__builtin_clz(top);
     if(!bigint_shift_left_inplace(a, f_shift) || !bigint_shift_left_inplace(b, f_shift)) {
-        bigint_free(b);
-        return NULL;
+        goto cleanup;
+    }
+
+    if(!ensure_capacity(a, a->size+1)){
+        goto cleanup;
     }
 
     // Ensure the first n limbs of a is less than from n limbs of v
     // Append 0 at a
     a->limbs[a->size++] = 0;
 
-    bigint_t *q = bigint_create(a->size - b->size);
+    q = bigint_create(a->size - b->size);
+    if(q==NULL) goto cleanup;
+
     q->size = a->size - b->size;
     q->negative = (a->negative!=b->negative);
 
@@ -733,7 +748,9 @@ bigint_t *bigint_div_inplace(bigint_t *_a, const bigint_t *_b) {
                 qhat -= 1; rhat += vnn;
             }
         }
-        bigint_t *qv = bigint_mul_uint32(b, (uint32_t)qhat);
+        qv = bigint_mul_uint32(b, (uint32_t)qhat);
+        if(qv==NULL) goto cleanup;
+
         unsigned borrow = 0;
         for(size_t j = 0, k=i-n; j<=n && k<=i; j++,k++){
             uint32_t u = a->limbs[k];
@@ -742,7 +759,10 @@ bigint_t *bigint_div_inplace(bigint_t *_a, const bigint_t *_b) {
             a->limbs[k] = (uint32_t)(u - subrehand);
             borrow = (u<subrehand);
         }
+
         bigint_free(qv);
+        qv = NULL;
+
         if(borrow){
             qhat--;
             unsigned carry = 0;
@@ -757,13 +777,12 @@ bigint_t *bigint_div_inplace(bigint_t *_a, const bigint_t *_b) {
         q->limbs[i - n] = (uint32_t)qhat;
     }
 
-    // Free the copy of _b
-    bigint_free(b);
-
     bigint_shift_right_inplace(a, f_shift);
-    word_shift_right_inplace(a, shifted_limbs);
     trim_size(a);
     trim_size(q);
+
+    result = q;
+    q = NULL;
     
     /*
     * Use this to restore b if operating on the given divisor to save space
@@ -772,13 +791,346 @@ bigint_t *bigint_div_inplace(bigint_t *_a, const bigint_t *_b) {
     // trim_size(b);
     */
 
-    return q;
+cleanup:
+    if(b) bigint_free(b);
+    if(q) bigint_free(q);
+    if(qv) bigint_free(qv);
+
+    return result;
 }
 
-bigint_t *bigint_mod(const bigint_t *a, const bigint_t *b){
-    bigint_t *rem = bigint_copy(a);
-    if(rem==NULL) return NULL;
-    bigint_t *q = bigint_div_inplace(rem, b);
+int bigint_mod_inplace(bigint_t *a, const bigint_t *mod){
+    bigint_t *q = bigint_div_inplace(a, mod);
+    if(q==NULL) return -1;
     bigint_free(q);
+    
+    return 1;
+}
+
+bigint_t *bigint_mod(const bigint_t *a, const bigint_t *mod){
+    bigint_t *rem = bigint_copy(a);
+
+    if(bigint_mod_inplace(rem, mod)!=1){
+        bigint_free(rem);
+        return NULL;
+    }
+    
     return rem;
+}
+
+typedef struct {
+    bigint_t *mod;
+    bigint_t *inv;
+    size_t r;
+} montgomery_space;
+
+/*
+* Initializes the montgomery_space by selecting r and calculating inv etc
+*/
+int montgomery_init(const bigint_t *_mod, montgomery_space *_mt){
+    if(_mod==NULL || _mt==NULL) return -1;
+    size_t _r = UINT64_C(1) << (8*sizeof(_mod->size) - __builtin_clzll(_mod->size));
+    // while(_r <= _mod->size) _r <<= 1;
+
+    bigint_t *mod = NULL;
+    bigint_t *inv = NULL;
+    bigint_t *r_value = NULL;
+    bigint_t *two = NULL;
+    bigint_t *ax = NULL;
+    bigint_t *ax_2 = NULL;
+    bigint_t *res = NULL;
+
+    int result = 1;
+
+    r_value = bigint_create(1);
+    if(r_value==NULL) {
+        result = -1;
+        goto cleanup;
+    }
+
+    bigint_add_uint32_inplace(r_value,1);
+    if(word_shift_left_inplace(r_value, _r)!=1) {
+        result = -1;
+        goto cleanup;
+    }
+
+    // Compute inv = _mod' % r
+    inv = bigint_create(1);
+    if(inv==NULL) {
+        result = -1;
+        goto cleanup;
+    }
+
+    if(bigint_add_uint32_inplace(inv, 1)!=1){
+        result = -1;
+        goto cleanup;
+    }
+
+    two = bigint_create(1);
+    if(two==NULL) {
+        result = -1;
+        goto cleanup;
+    }
+    two->limbs[0] = 2;
+    two->size = 1;
+
+    for(size_t x = _r<<5; x>0; x>>=1){
+        ax = bigint_mul_fft(inv, _mod);
+        if(ax==NULL) {
+            result = -1;
+            goto cleanup;
+        }
+
+        if(ax){
+            // ax % r
+            if(ax->size > _r){
+                ax->size = _r;
+                trim_size(ax);
+            }
+        }
+
+        if(ax) ax->negative = true;
+
+        ax_2 = bigint_add(ax, two);
+        if(ax_2==NULL) {
+            result = -1;
+            goto cleanup;
+        }
+
+        if(ax_2 && ax_2->negative){
+            bigint_t *temp = bigint_add(ax_2, r_value);
+            if(temp==NULL) {
+                result=-1;
+                goto cleanup;
+            }
+            if(ax_2) bigint_free(ax_2);
+
+            ax_2 = temp;
+
+            if(ax_2 && ax_2->size > _r){
+                ax_2->size = _r;
+                trim_size(ax_2);
+            }
+        }
+
+        res = bigint_mul_fft(ax_2, inv);
+        if(res==NULL) {
+            result = -1;
+            goto cleanup;
+        }
+
+        // perform mod r
+        if(res->size>_r){
+            res->size = _r;
+            trim_size(res);
+        }
+        if(inv) bigint_free(inv);
+        inv = res;
+        res = NULL;
+        bigint_free(ax);
+        ax = NULL;
+        bigint_free(ax_2);
+        ax_2 = NULL;
+    }
+
+    mod = bigint_copy(_mod);
+    if(mod==NULL) {
+        result = -1;
+        goto cleanup;
+    }
+
+    _mt->r = _r;
+    _mt->inv = inv;
+    _mt->mod = mod;
+    inv = NULL;
+    mod = NULL;
+
+    cleanup:
+        if(mod) bigint_free(mod);
+        if(inv) bigint_free(inv);
+        if(res) bigint_free(res);
+        if(ax) bigint_free(ax);
+        if(ax_2) bigint_free(ax_2);
+        if(two) bigint_free(two);
+        if(r_value) bigint_free(r_value);
+
+    return result;
+}
+
+int montgomery_transform(bigint_t *a, const montgomery_space *mt){
+
+    // Perform a*r
+    if(word_shift_left_inplace(a, mt->r)!=1){
+        return 0;
+    }
+
+    // Perform ar % mod
+    bigint_t *q = bigint_div_inplace(a, mt->mod);
+    if(q==NULL){
+        return 0;
+    }
+    // We don't need quotient
+    bigint_free(q);
+    return 1;
+}
+
+bigint_t* montgomery_reduce(const bigint_t *a, const montgomery_space *mt){
+
+    bigint_t *_amodr = NULL;
+    bigint_t *q = NULL;
+    bigint_t *qn = NULL;
+    bigint_t *adivr = NULL;
+    bigint_t *res = NULL;
+    bigint_t *res_add_n = NULL;
+    bigint_t *result = NULL;
+
+    _amodr = bigint_copy(a);
+    if(_amodr==NULL) goto cleanup;
+
+    // take a%r
+    if(_amodr->size > mt->r){
+        _amodr->size = mt->r;
+        trim_size(_amodr);
+    }
+
+    q = bigint_mul_fft(_amodr, mt->inv);
+    if(q==NULL) goto cleanup;
+
+    if(q->size > mt->r){
+        q->size = mt->r;
+        trim_size(q);
+    }
+
+    bigint_free(_amodr);
+    _amodr = NULL;
+
+    // perform q * n
+    qn = bigint_mul_fft(q, mt->mod);
+    if(qn==NULL) goto cleanup;
+
+    // qn / r
+    word_shift_right_inplace(qn, mt->r);
+    qn->negative = !qn->negative;
+
+    bigint_free(q);
+    q = NULL;
+
+    adivr = bigint_copy(a);
+    if(adivr==NULL) goto cleanup;
+    
+    // perform a div r
+    word_shift_right_inplace(adivr, mt->r);
+
+
+    // The res bound  is -n < res < n
+    res = bigint_add(adivr, qn);
+    if(res==NULL) goto cleanup;
+
+    bigint_free(qn);
+    bigint_free(adivr);
+    qn = NULL;
+    adivr = NULL;
+    
+    if(res->negative){
+        res_add_n = bigint_add(res, mt->mod);
+        if(res_add_n==NULL) goto cleanup;
+
+        bigint_free(res);
+        res = res_add_n;
+        res_add_n = NULL;
+    }
+
+    result = res;
+    res = NULL;
+
+    cleanup:
+        if(_amodr) bigint_free(_amodr);
+        if(q) bigint_free(q);
+        if(qn) bigint_free(qn);
+        if(adivr) bigint_free(adivr);
+        if(res) bigint_free(res);
+        if(res_add_n) bigint_free(res_add_n);
+
+    return result;
+
+}
+
+bigint_t* montgomery_mul(const bigint_t *a, const bigint_t *b, const montgomery_space *mt){
+    bigint_t *ab = bigint_mul_fft(a,b);
+    if(ab==NULL) return NULL;
+    bigint_t *res = montgomery_reduce(ab, mt);
+    bigint_free(ab);
+    return res;
+}
+
+bigint_t *montgomery_extract(const bigint_t *a, const montgomery_space *mt){
+    return montgomery_reduce(a,mt);
+}
+
+void montgomery_free(montgomery_space *mt){
+    bigint_free(mt->inv);
+    bigint_free(mt->mod);
+}
+
+/*
+* Perform modular exponentiation
+* Uses montgomery reduction and fft based multiplication to reduce complexity to O(N^2 log(N))
+* Uses Number theoratic transform combined with chinese remainder theorem to construct the result in multiplication
+* Uses optimized multiplication with complexity of O(NlogN) for each multiplication
+* Uses Montgomery multiplication to avoid division cost 
+*   by substituting division operation with multiplication operations.
+*/
+bigint_t *bigint_modpow(const bigint_t *_a, const bigint_t *_b, const bigint_t* mod){
+
+    montgomery_space mt;
+    if(montgomery_init(mod, &mt)!=1) return NULL;
+
+    bigint_t *b = NULL;
+    bigint_t *curr = NULL;
+    bigint_t *result = NULL;
+    bigint_t *res = NULL;
+
+    b = bigint_copy(_b);
+    if(b==NULL) goto cleanup;
+
+    curr = bigint_copy(_a);
+    if(curr==NULL) goto cleanup;
+
+    result = bigint_create(1);
+    if(result==NULL) goto cleanup;
+
+    bigint_add_uint32_inplace(result, 1);
+
+    // Transform to montgomery space
+    if(montgomery_transform(curr, &mt)!=1){
+        goto cleanup;
+    }
+    if(montgomery_transform(result, &mt)!=1) goto cleanup;
+
+    while(b->size){
+        if(b->limbs[0]&1){
+            bigint_t *temp = montgomery_mul(result, curr, &mt);
+            if(temp==NULL) goto cleanup;
+            if(result) bigint_free(result);
+            result = temp;
+        }
+
+        bigint_shift_right_inplace(b, 1);
+        if(b->size){
+            bigint_t *temp = montgomery_mul(curr, curr, &mt);
+            if(temp==NULL) goto cleanup;
+            if(curr) bigint_free(curr);
+            curr = temp;
+        }
+    }
+
+    res = montgomery_extract(result, &mt);
+
+    cleanup:
+        if(b) bigint_free(b);
+        if(curr) bigint_free(curr);
+        if(result) bigint_free(result);
+        montgomery_free(&mt);
+
+    return res;
 }
