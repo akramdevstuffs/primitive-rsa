@@ -1,4 +1,4 @@
-#include "rsa/bigint.h"
+#include "bigint/bigint.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -6,18 +6,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 
-static int tests_run = 0;
-static int tests_failed = 0;
-
-#define CHECK(condition, message)                              \
-    do {                                                       \
-        tests_run++;                                           \
-        if (!(condition)) {                                    \
-            fprintf(stderr, "FAIL: %s (line %d)\n",            \
-                    message, __LINE__);                         \
-            tests_failed++;                                    \
-        }                                                      \
-    } while (0)
+#include "../test_helpers.h"
 
 
 /*

@@ -1,4 +1,4 @@
-#include "rsa/bigint.h"
+#include "bigint/bigint.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -111,12 +111,43 @@ bigint_t *bigint_from_string(const char *s){
     return bigint;
 }
 
+void bigint_to_string(const bigint_t *a, char *buffer, size_t buffer_size)
+{
+    int offset = 0;
+    if(a->negative) *(buffer + offset++) = '-';
+    for(size_t i = a->size; i-- > 0; ){
+        int written = snprintf(buffer+offset, buffer_size-offset, "%u ", a->limbs[i]);
+
+        if(written < 0 || ((uint32_t)written + offset) >= buffer_size) break;  // Overflow occurs
+
+        offset += written;
+    }
+}
+
+bigint_t *bigint_from_uint32(uint32_t value)
+{
+    if(value==0) return bigint_create(0);
+    bigint_t *x = bigint_create(1);
+    if(x==NULL) return NULL; // Allocation failure
+    x->limbs[0] = value;
+    x->size = 1;
+    return x;
+}
+
+bigint_t *bigint_from_uint64(uint64_t value){
+    if(value==0) return bigint_create(0);
+    if((value>>32)==0) return bigint_from_uint32(value);
+    bigint_t *x = bigint_create(2); if(x==NULL) return NULL;
+    x->limbs[0] = (uint32_t)value;
+    x->limbs[1] = value>>32;
+    x->size=2;
+    return x;
+}
+
 void bigint_free(bigint_t* bigint){
     free(bigint->limbs);
     free(bigint);
 }
-
-
 
 int is_greater_base(const bigint_t* a, const bigint_t* b){
     if(a->size!=b->size) return 1 - 2*(a->size < b->size);
@@ -129,6 +160,20 @@ int is_greater_base(const bigint_t* a, const bigint_t* b){
     return 0;
 }
 
+/*
+* |a|>b -> 1
+* |a|=b -> 0
+* |a|<b -> -1
+*/
+int bigint_compare_abs_uint32(const bigint_t *a, uint32_t b)
+{
+    if(a->size==0) return -(b>0);
+    if(a->size>1) return 1;
+    if(a->limbs[0]==b) return 0;
+    if(a->limbs[0]>b) return 1;
+    return -1;
+}
+
 int bigint_compare(const bigint_t* a, const bigint_t* b){
     if(a->negative!=b->negative) return 1 - 2*(a->negative);
     int cmp = is_greater_base(a,b);
@@ -136,6 +181,20 @@ int bigint_compare(const bigint_t* a, const bigint_t* b){
     return a->negative ? -cmp : cmp;
 }
 
+/*
+* Negate the sign, simply a *= -1
+*/
+void bigint_negate(bigint_t *a)
+{
+    if(a->size==0) return;
+    a->negative ^= 1;
+}
+
+/*
+* Add abs of a + abs of b,
+* Doesn't handle sign
+* Supports target == a or target == b
+*/
 bool bigint_add_abs(const bigint_t *a, const bigint_t *b, bigint_t *target){
 
     if(a->size < b->size){
@@ -166,6 +225,11 @@ bool bigint_add_abs(const bigint_t *a, const bigint_t *b, bigint_t *target){
     return true;
 }
 
+/*
+* Substract abs of a - abs of b,
+* Doesn't handle sign, for |a| < |b| shows undefinied behaviour
+* Supports target == a or target == b
+*/
 bool bigint_sub_abs(const bigint_t* a, const bigint_t* b, bigint_t* target){
 
     if(!ensure_capacity(target, a->size))
@@ -204,36 +268,84 @@ int bigint_add_uint32_inplace(bigint_t *a, uint32_t b){
     return 1;
 }
 
+/*
+* substract absolute value of a by b.
+* |a| >= b, else undefinied behaviour
+* Don't change or operate on sign
+*/
+int bigint_sub_uint32_inplace(bigint_t *a, uint32_t b){
+    if(b==0) return 1;
+    uint32_t borrow = 0;
+    for(size_t i = 0;i<a->size;i++){
+        uint32_t sub =  borrow + (i==0)?b:0; // This wil always fit in u32
+        uint32_t u = a->limbs[i];
+        a->limbs[i] = (u-sub);               // for (u<sub) it perform round equal to 2^32 -1 + u - sub
+        if(u<sub)
+            borrow = 1;
+        else
+            break;
+    }
+    trim_size(a);
+    return 1;
+}
+
 bigint_t *bigint_add(const bigint_t *a, const bigint_t *b){
+
+    // TODO: Avoid unnecessary copy
+    bigint_t *result = bigint_copy(a);
+    if(result==NULL) return NULL;
+
+    if(bigint_add_inplace(result, b)==0){
+        bigint_free(result);
+        return NULL;
+    }
+
+    return result;
+}
+
+
+bigint_t *bigint_sub(const bigint_t *a, const bigint_t *b)
+{
+    // This function perform a swallow copy of b, 
+    // Handle lifecycle carefully here
+    bigint_t c = *b; // swallow  copy
+    bigint_negate(&c); 
+
+    return bigint_add(a,&c); // No need to free memory, because of swallow copy
+}
+
+int bigint_sub_inplace(bigint_t *a, const bigint_t *b){
+    bigint_t c = *b; // swallow copy
+    bigint_negate(&c);
+
+    return bigint_add_inplace(a,&c);
+}
+
+int bigint_add_inplace(bigint_t *a, const bigint_t *b)
+{
     size_t max_size = a->size+1;
     if(max_size <= b->size){
         max_size = b->size + 1;
     }
 
-    bigint_t *result = bigint_create(max_size);
-    if(result==NULL) return NULL;
+    if(!ensure_capacity(a, max_size)) return 0;
 
     if(a->negative!=b->negative){
         int res = is_greater_base(a,b);
         if(res==-1){
-            const bigint_t *temp = a;
-            a = b;
-            b = temp;
+            if(bigint_sub_abs(b,a,a)==false) return 0;
+            a->negative = b->negative;
         }
-
-        if(bigint_sub_abs(a,b,result)==false){
-            bigint_free(result);
-            return NULL;
-        }
+        else if(bigint_sub_abs(a,b,a)==false)
+            return 0;
     }
-    else if(!bigint_add_abs(a,b,result)){
-        bigint_free(result);
-        return NULL;
+    else if(!bigint_add_abs(a,b,a)){
+        return 0;
     }
 
-    result->negative = a->negative;
+    trim_size(a);
 
-    return result;
+    return 1;
 }
 
 int bigint_assign(bigint_t *a, const bigint_t *b){
@@ -799,6 +911,14 @@ cleanup:
     return result;
 }
 
+bigint_t *bigint_div(const bigint_t *a, const bigint_t *b)
+{
+    bigint_t *rem = bigint_copy(a); if(rem==NULL) return NULL;
+    bigint_t *q = bigint_div_inplace(rem, b);
+    bigint_free(rem);
+    return q;
+}
+
 int bigint_mod_inplace(bigint_t *a, const bigint_t *mod){
     bigint_t *q = bigint_div_inplace(a, mod);
     if(q==NULL) return -1;
@@ -818,16 +938,10 @@ bigint_t *bigint_mod(const bigint_t *a, const bigint_t *mod){
     return rem;
 }
 
-typedef struct {
-    bigint_t *mod;
-    bigint_t *inv;
-    size_t r;
-} montgomery_space;
-
 /*
-* Initializes the montgomery_space by selecting r and calculating inv etc
+* Initializes the montgomery_ctx by selecting r and calculating inv etc
 */
-int montgomery_init(const bigint_t *_mod, montgomery_space *_mt){
+int montgomery_init(const bigint_t *_mod, montgomery_ctx *_mt){
     if(_mod==NULL || _mt==NULL) return -1;
     size_t _r = UINT64_C(1) << (8*sizeof(_mod->size) - __builtin_clzll(_mod->size));
     // while(_r <= _mod->size) _r <<= 1;
@@ -957,7 +1071,7 @@ int montgomery_init(const bigint_t *_mod, montgomery_space *_mt){
     return result;
 }
 
-int montgomery_transform(bigint_t *a, const montgomery_space *mt){
+int montgomery_transform(bigint_t *a, const montgomery_ctx *mt){
 
     // Perform a*r
     if(word_shift_left_inplace(a, mt->r)!=1){
@@ -974,7 +1088,7 @@ int montgomery_transform(bigint_t *a, const montgomery_space *mt){
     return 1;
 }
 
-bigint_t* montgomery_reduce(const bigint_t *a, const montgomery_space *mt){
+bigint_t* montgomery_reduce(const bigint_t *a, const montgomery_ctx *mt){
 
     bigint_t *_amodr = NULL;
     bigint_t *q = NULL;
@@ -1055,7 +1169,7 @@ bigint_t* montgomery_reduce(const bigint_t *a, const montgomery_space *mt){
 
 }
 
-bigint_t* montgomery_mul(const bigint_t *a, const bigint_t *b, const montgomery_space *mt){
+bigint_t* montgomery_mul(const bigint_t *a, const bigint_t *b, const montgomery_ctx *mt){
     bigint_t *ab = bigint_mul_fft(a,b);
     if(ab==NULL) return NULL;
     bigint_t *res = montgomery_reduce(ab, mt);
@@ -1063,11 +1177,11 @@ bigint_t* montgomery_mul(const bigint_t *a, const bigint_t *b, const montgomery_
     return res;
 }
 
-bigint_t *montgomery_extract(const bigint_t *a, const montgomery_space *mt){
+bigint_t *montgomery_extract(const bigint_t *a, const montgomery_ctx *mt){
     return montgomery_reduce(a,mt);
 }
 
-void montgomery_free(montgomery_space *mt){
+void montgomery_free(montgomery_ctx *mt){
     bigint_free(mt->inv);
     bigint_free(mt->mod);
 }
@@ -1082,7 +1196,7 @@ void montgomery_free(montgomery_space *mt){
 */
 bigint_t *bigint_modpow(const bigint_t *_a, const bigint_t *_b, const bigint_t* mod){
 
-    montgomery_space mt;
+    montgomery_ctx mt;
     if(montgomery_init(mod, &mt)!=1) return NULL;
 
     bigint_t *b = NULL;
