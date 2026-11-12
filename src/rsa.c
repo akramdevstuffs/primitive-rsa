@@ -73,26 +73,26 @@ void rsa_free_pbk(rsa_public_key_t *pbk)
 */
 bigint_t *rsa_encrypt(const rsa_private_key_t *sender_prk, const rsa_public_key_t *receiver_pbk, const bigint_t *msg)
 {
-    bigint_t *fingerprint = crt_encrypt(sender_prk->d, sender_prk->n, msg);
-    if(fingerprint==NULL) return NULL;
+    bigint_t *signature = crt_encrypt(sender_prk->d, sender_prk->n, msg);
+    if(signature==NULL) return NULL;
 
-    bigint_t *cipher = crt_encrypt(receiver_pbk->e, receiver_pbk->n, fingerprint);
-    bigint_free(fingerprint);
+    bigint_t *cipher = crt_encrypt(receiver_pbk->e, receiver_pbk->n, signature);
+    bigint_free(signature);
     return cipher;
 }
 
 /*
 * It takes private and public key of receiver and sender and decrypts it
 * It perform decrytion two times. 
-* First it generates fingerprint by using it's private key then decrypt the fingerprint by using public key
+* First it generates signature by using it's private key then decrypt the signature by using public key
 * It helps verifying the message originated from the sender who owns the public key 
 */
 bigint_t *rsa_decrypt(const rsa_private_key_t *receiver_prk, const rsa_public_key_t *sender_pbk, const bigint_t *cipher)
 {
-    bigint_t *fingerprint = crt_decrypt(receiver_prk->d, receiver_prk->n, cipher);
-    if(fingerprint==NULL) return NULL;
+    bigint_t *signature = crt_decrypt(receiver_prk->d, receiver_prk->n, cipher);
+    if(signature==NULL) return NULL;
 
-    bigint_t *msg = crt_decrypt(sender_pbk->e, sender_pbk->n, fingerprint);
-    bigint_free(fingerprint);
+    bigint_t *msg = crt_decrypt(sender_pbk->e, sender_pbk->n, signature);
+    bigint_free(signature);
     return msg;
 }
