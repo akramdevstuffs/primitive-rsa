@@ -355,7 +355,9 @@ static void test_copy(void){
     CHECK(bigint_compare(a,b)==0, "Failed");
     // Destroy a and check if b is still readable
     bigint_free(a);
-    CHECK(bigint_compare(b, bigint_from_string("1000000010"))==0, "Compare failed copy is different");
+    bigint_t *expected = bigint_from_string("1000000010");
+    CHECK(bigint_compare(b, expected)==0, "Compare failed copy is different");
+    bigint_free(expected);
     bigint_free(b);
 }
 
@@ -365,13 +367,19 @@ static void test_mul_uint32(void){
 
     bigint_t *a = bigint_from_string("2435405568406840543");
 
-    check_bigint("Multiply by zero", bigint_mul_uint32(a, 0), NULL, 0, false);
+    bigint_t *res0 = bigint_mul_uint32(a, 0);
+    check_bigint("Multiply by zero", res0, NULL, 0, false);
+    bigint_free(res0);
 
-    check_bigint("Multiply by 1", bigint_mul_uint32(a,1), a->limbs, a->size, a->negative);
+    bigint_t *res1 = bigint_mul_uint32(a, 1);
+    check_bigint("Multiply by 1", res1, a->limbs, a->size, a->negative);
+    bigint_free(res1);
 
     bigint_t *b = bigint_from_string("1382928004180845554458749");
 
-    check_bigint("Multiply with a*567843==b", bigint_mul_uint32(a, 567843), b->limbs, b->size, b->negative);
+    bigint_t *res2 = bigint_mul_uint32(a, 567843);
+    check_bigint("Multiply with a*567843==b", res2, b->limbs, b->size, b->negative);
+    bigint_free(res2);
 
     bigint_free(a);
     bigint_free(b);

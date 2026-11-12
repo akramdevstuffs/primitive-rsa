@@ -1,0 +1,60 @@
+name: C17 RSA CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc make
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON
+
+      - name: Build project
+        run: |
+          cmake --build build --parallel
+
+      - name: Run tests
+        run: |
+          ctest --test-dir build --output-on-failure
+
+      - name: Build with AddressSanitizer
+        run: |
+          cmake -S . -B build-asan \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+
+          cmake --build build-asan --parallel
+
+      - name: Run tests with AddressSanitizer
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          ctest --test-dir build-asan --output-on-failure

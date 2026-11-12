@@ -70,6 +70,11 @@ target_compile_options(rsa
         -Wshadow
 )
 
+target_compile_definitions(rsa
+    PRIVATE
+        LOG_ENABLE=0
+)
+
 if(BUILD_TESTING)
 
     # RSA Tests

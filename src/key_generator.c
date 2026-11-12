@@ -101,6 +101,7 @@ bigint_t *kgn_compute_inverse(const bigint_t *d, const bigint_t *mod){
         bigint_free(y);
         return NULL;
     }
+    bigint_free(g);
     bigint_free(y);
 
     while(x->negative || bigint_compare(x,mod)>=0){
