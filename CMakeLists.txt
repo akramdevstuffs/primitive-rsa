@@ -47,6 +47,7 @@ add_executable(rsa
     src/rsa.c
     src/key_generator.c
     src/algorithms.c
+    src/crypt.c
 )
 
 # Make headers accessible
@@ -78,8 +79,10 @@ if(BUILD_TESTING)
         src/rsa.c
         src/algorithms.c
         src/key_generator.c
+        src/crypt.c
         tests/test_helpers.c
         tests/rsa/test_key_generator.c
+        tests/rsa/test_crypt.c
     )
 
 

@@ -18,7 +18,7 @@ void kgn_set_seed(const uint32_t *var){
         (uint32_t)(uintptr_t)&variable ^
         user_input;
     
-    srand(seed);
+    srand(2829603626);
 
     LOG(MODULE, LOG_LEVEL_DEBUG, "The generated seed %u",seed);
 }
@@ -158,12 +158,17 @@ int kgn_generate_skey_pair(const bigint_t *p, const bigint_t *q, bigint_t **d_de
 
         // Now generate e against d
         e = kgn_compute_inverse(d, totient_pq); 
-        if(!e){
-            LOG_BIGINT(MODULE, LOG_LEVEL_DEBUG, "Inverse generation failed for d=",d);
-            // if e fails or inverse doesn't exists try with another d
-            bigint_free(d);
-            d=NULL;
+
+        if(e) {
+            LOG_BIGINT(MODULE, LOG_LEVEL_DEBUG, "Inverse e=",e);
+            break;
+
         }
+
+        LOG_BIGINT(MODULE, LOG_LEVEL_DEBUG, "Inverse generation failed for d=",d);
+        // if e fails or inverse doesn't exists try with another d
+        bigint_free(d);
+        d=NULL;
     }
 
     *d_dest = d; d=NULL;

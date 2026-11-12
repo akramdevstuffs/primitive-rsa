@@ -124,6 +124,59 @@ void bigint_to_string(const bigint_t *a, char *buffer, size_t buffer_size)
     }
 }
 
+/*
+* Convert bytes(uint8_t) to bigint_t
+* Uses reverse indexing to store it
+* If size is not multiple of 4, pad it with b'0'
+*/
+bigint_t *bigint_from_bytes(const uint8_t *bytes, size_t size)
+{
+    if(size && bytes==NULL) return NULL;
+
+    size_t limb_count = (size+3)/4;
+
+    bigint_t *result = bigint_create(limb_count);
+    if(!result) return NULL;
+
+    result->size = limb_count;
+    result->negative = false;
+
+    // initialize the memory with zero
+    memset(result->limbs, 0, result->size*sizeof(*result->limbs));
+
+    for(size_t i = 0; i<size;i++){
+        size_t rev_index = size - 1 - i;
+
+        size_t limb_index = i / 4;
+        size_t shift = (i % 4) * 8;
+
+        result->limbs[limb_index] |=
+            (uint32_t)bytes[rev_index] << shift;
+    }
+
+    return result;
+}
+
+/*
+* Convert bigint to bytes(uint8_t)
+* return SIZE_MAX if input buffer size is insufficient
+* return total_bytes written
+*/
+size_t bigint_to_bytes(const bigint_t *num, uint8_t *output, size_t output_length)
+{
+    // check for capacity
+    if(4*num->size > output_length){
+        return SIZE_MAX;
+    }
+    for(size_t i = num->size; i-- > 0;){
+        for(int j = 3; j>=0;j--){
+            *output = (uint8_t) (num->limbs[i]>>(8*j));
+            output++;
+        }
+    }
+    return 4*num->size;
+}
+
 bigint_t *bigint_from_uint32(uint32_t value)
 {
     if(value==0) return bigint_create(0);

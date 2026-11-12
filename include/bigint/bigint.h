@@ -19,6 +19,10 @@ bigint_t *bigint_from_string(const char *s);
 
 void bigint_to_string(const bigint_t *a, char *buffer, size_t buffer_size);
 
+bigint_t *bigint_from_bytes(const uint8_t *b, size_t size);
+
+size_t bigint_to_bytes(const bigint_t *num, uint8_t *output, size_t output_length);
+
 bigint_t *bigint_from_uint32(uint32_t value);
 
 bigint_t *bigint_from_uint64(uint64_t value);

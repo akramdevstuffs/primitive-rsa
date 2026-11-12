@@ -8,11 +8,20 @@ uint32_t alg_random_uint32(){
 }
 
 // dest should have enough space to contain any num under bounds
+/*
+* TODO: alg_generate_bigint current implementation causing too much problem
+* TODO: update alg_generate_bigint to use uniformally distributed number generation
+* It's doesn't have uniform distribution
+* There's also bad implementation with bigint internals
+*/
 void alg_generate_bigint(const bigint_t *ub, bigint_t *dest){
-    dest->limbs[ub->size-1] = alg_random_uint32() % ub->limbs[ub->size-1];
-    dest->size = ub->size;
 
-    for(size_t i = 0; i<dest->size-1;i++){
+    if(ub->limbs[ub->size-1]>1)
+    dest->limbs[ub->size-1] = alg_random_uint32() % ub->limbs[ub->size-1];
+
+    dest->size = ub->size - (ub->limbs[ub->size-1]<=1);
+
+    for(size_t i = 0; i<ub->size-1;i++){
         dest->limbs[i] = alg_random_uint32();
     }
     while(dest->size>0 && dest->limbs[dest->size-1]==0) dest->size--;
@@ -140,7 +149,7 @@ cleanup:
     return result;
 }
 
-#define MAX_PRIME_ATTEMPT 150
+#define MAX_PRIME_ATTEMPT 300
 
 /*
 * Generate prime number p < ub, 
@@ -157,10 +166,18 @@ bigint_t *alg_generate_prime(const bigint_t *lb, const bigint_t *ub){
     nub = bigint_add(ub, nlb);
     if(nub==NULL) goto cleanup;
 
-    bigint_t *p = bigint_create(nub->size);
+    bigint_t *p = NULL;
     for(int attempt=1; attempt<=MAX_PRIME_ATTEMPT; attempt++){
+        p = bigint_create(nub->size);
         alg_generate_bigint(nub, p);
         if(bigint_sub_inplace(p, nlb)!=1) goto cleanup;
+
+        // Check if number is zero or negative
+        if(p->negative || p->size==0){
+            bigint_free(p);p=NULL;
+            continue;
+        }
+
         // Check if even then make it odd
         if((p->limbs[0]&1)==0 &&
             bigint_add_uint32_inplace(p, 1)!=1) goto cleanup;
@@ -182,6 +199,7 @@ bigint_t *alg_generate_prime(const bigint_t *lb, const bigint_t *ub){
             p = NULL;
             break;
         }
+        bigint_free(p); p=NULL;
     }
 
 cleanup:

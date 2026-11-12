@@ -177,6 +177,26 @@ static void test_invalid_input(void) {
     CHECK(n == NULL, "reject NULL input");
 }
 
+static void test_bytes_conv(void){
+    printf("\n ---- test_bytes_conv ----\n");
+    char bytes[] = "Akrambigint"; // multiple of 4 to avoid padding
+    const size_t size = sizeof(bytes);
+
+    bigint_t *res = bigint_from_bytes(bytes, size);
+    CHECK(res!=NULL, "Conversion to bigint failed");
+    CHECK(res->size==3, "Size is wrong");
+
+    char results[size];
+
+    size_t written = bigint_to_bytes(res, results, sizeof(results));
+    CHECK(written==size, "Bytes are not completely written");
+
+    for(size_t i = 0; i<written;i++){
+        CHECK(results[i]==bytes[i], "Conversion failed bytes are not same");
+    }
+    bigint_free(res);
+}
+
 /* ---------------------------------------------------------
  * 3. bigint_compare()
  * --------------------------------------------------------- */
@@ -1154,6 +1174,7 @@ static void test_modpow_random(void){
 int main(void) {
     test_parse();
     test_invalid_input();
+    test_bytes_conv();
     test_compare();
     test_add();
     test_assign();
