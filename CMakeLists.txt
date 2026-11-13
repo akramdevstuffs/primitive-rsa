@@ -17,6 +17,37 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CTest)
 
 # -----------------------
+# Sanitizer Configuration
+# -----------------------
+
+option(ENABLE_SANITIZERS "Enable AddressSanitizer and UBSan" OFF)
+
+if(ENABLE_SANITIZERS)
+
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+
+        message(STATUS "AddressSanitizer and UBSan enabled")
+
+        add_compile_options(
+            -fsanitize=address,undefined
+            -fno-omit-frame-pointer
+            -g
+            -O1
+        )
+
+        add_link_options(
+            -fsanitize=address,undefined
+        )
+
+    else()
+        message(FATAL_ERROR
+            "Sanitizers are supported only with GCC or Clang"
+        )
+    endif()
+
+endif()
+
+# -----------------------
 # Big Integer Library
 # -----------------------
 
@@ -135,5 +166,21 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME bigint_tests COMMAND test_bigint)
+
+endif()
+
+if(ENABLE_SANITIZERS AND BUILD_TESTING)
+
+    set(SANITIZER_ENV
+        "ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1"
+        "UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1"
+    )
+
+    set_tests_properties(
+        rsa_tests
+        bigint_tests
+        PROPERTIES
+            ENVIRONMENT "${SANITIZER_ENV}"
+    )
 
 endif()

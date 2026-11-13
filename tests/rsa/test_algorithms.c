@@ -181,6 +181,8 @@ void test_gcd_coeff(void){
         bigint_free(a1);
         bigint_free(b1);
         bigint_free(r);
+        bigint_free(x);
+        bigint_free(y);
     }
     bigint_free(ub);
 }
